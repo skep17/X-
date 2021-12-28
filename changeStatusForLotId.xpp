@@ -1,0 +1,89 @@
+static void SPL_REQ_12469_Remove_reservation(Args _args)
+{
+    InventTrans             inventTrans;
+    InventTransOrigin       inventTransOrigin;
+    InventSum               inventSum;
+    str  255                curLotId;
+
+    Dialog                  dialog;
+    DialogField             dialogField;
+
+    SysExcelApplication     application;
+    SysExcelWorkbooks       workbooks;
+    SysExcelWorkbook        workbook;
+    SysExcelWorksheets      worksheets;
+    SysExcelWorksheet       worksheet;
+    SysExcelCells           cells;
+    COMVariantType          type;
+    FileName                filename;
+    int                     column;
+    int                     row;
+    int                     counter;
+
+    if(curext() != 'DBI')
+        throw error ("Please run the script in DBI");
+
+    dialog = new dialog("Please select the excel file to load. Excel file should have desired data in the second column of the first sheet with column name in the first cell of it.");
+    dialog.addText("Select file:");
+    dialogField = dialog.addField(ExtendedTypeStr("FilenameOpen"));
+    dialog.run();
+    if(dialog.closedOk())
+    {
+        filename = dialogField.value();
+    }
+    else
+    {
+        throw error("Could not load the selected file");
+    }
+
+    application = SysExcelApplication::construct();
+    workbooks = application.workbooks();
+    try
+    {
+        workbooks.open(filename);
+    }
+    catch (Exception::Error)
+    {
+        throw error("File cannot be opened.");
+    }
+    workbook = workbooks.item(1);
+    worksheets = workbook.worksheets();
+    worksheet = worksheets.itemFromNum(1);
+    cells = worksheet.cells();
+    column = 2;
+    row = 2;
+    counter = 0;
+
+    ttsBegin;
+
+    do
+    {
+        curLotId = cells.item(row,column).value().bStr();
+
+        while select forUpdate inventTrans
+            where inventTrans.StatusIssue == StatusIssue::ReservPhysical
+                join inventTransOrigin
+                    where inventTransOrigin.InventTransId == curLotId &&
+                    inventTrans.InventTransOrigin == inventTransOrigin.recId
+                        join forUpdate inventSum
+                            where inventSum.ItemId == inventTrans.ItemId &&
+                            inventSum.InventDimId == inventTrans.InventDimId
+        {
+            inventTrans.statusIssue=StatusIssue::OnOrder;
+            inventSum.ReservPhysical=0;
+            inventTrans.doUpdate();
+            inventSum.doUpdate();
+            counter++;
+        }
+
+        //info(curlotid);
+        row++;
+        
+        type = cells.item(row,column).value().variantType();
+    }
+    while(type != COMVariantType::VT_EMPTY);
+
+    ttsCommit;
+    
+    info(strFmt("%1 LOT_ID-s have updated",counter));
+}
