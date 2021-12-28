@@ -18,7 +18,8 @@ static void SPL_REQ_12469_Remove_reservation(Args _args)
     FileName                filename;
     int                     column;
     int                     row;
-    int                     counter;
+    int                     countTotal;
+    int                     countLogical;
 
     if(curext() != 'DBI')
         throw error ("Please run the script in DBI");
@@ -52,7 +53,8 @@ static void SPL_REQ_12469_Remove_reservation(Args _args)
     cells = worksheet.cells();
     column = 2;
     row = 2;
-    counter = 0;
+    countTotal = 0;
+    countLogical = 0;
 
     ttsBegin;
 
@@ -73,17 +75,17 @@ static void SPL_REQ_12469_Remove_reservation(Args _args)
             inventSum.ReservPhysical=0;
             inventTrans.doUpdate();
             inventSum.doUpdate();
-            counter++;
+            countLogical++;
         }
 
         //info(curlotid);
         row++;
-        
+        countTotal++;
         type = cells.item(row,column).value().variantType();
     }
     while(type != COMVariantType::VT_EMPTY);
 
     ttsCommit;
     
-    info(strFmt("%1 LOT_ID-s have updated",counter));
+    info(strFmt("%1 LOT_ID-s out of %2 have been updated",countLogical,countTotal));
 }
