@@ -1,0 +1,68 @@
+public class RecalcWMSJournalLineManager_BRJ
+{
+    
+
+    public static void main(Args _args)
+    {
+        FormDataSource      wmsJournalTrans_ds;
+        WMSJournalTrans     journalTrans;
+        FormRun             formRun;
+
+        str                 methodToCall;
+        DictTable           dictTable;
+
+        formRun = _args.caller();
+
+        if(formRun)
+        {
+            wmsJournalTrans_ds = formRun.dataSource(formDataSourceStr(WMSJournalTable,WMSJournalTrans));
+        }
+
+        //  selecting method to call based on the enum value;
+        switch(_args.parmEnum())
+        {
+            case RecalcWMSJournalLineType_BRJ::UnitQty :
+                methodToCall = tableMethodStr(WMSJournalTrans, modifyUnitQty);
+                break;
+
+            case RecalcWMSJournalLineType_BRJ::Qty :
+                methodToCall = tableMethodStr(WMSJournalTrans, modifyQty);
+                break;
+
+            default :
+                break;
+        }
+
+        if(wmsJournalTrans_ds && methodToCall)
+        {
+            dictTable = new DictTable(tablenum(WMSJournalTrans));
+
+            ttsbegin;
+
+            journalTrans = wmsJournalTrans_ds.getFirst() as WMSJournalTrans;
+
+            while(journalTrans)
+            {
+                dictTable.callObject(methodToCall, journalTrans);
+                JournalTrans.update();
+
+                journalTrans = wmsJournalTrans_ds.getNext() as WMSJournalTrans;
+            }
+
+            ttscommit;
+
+            wmsJournalTrans_ds.reread();
+            wmsJournalTrans_ds.research(true);
+        }
+        else
+        {
+            RecalcWMSJournalLineManager_BRJ::logError();
+        }
+    }
+
+    private static void logError()
+    {
+        error("@SYS4008069");
+    }
+
+}
