@@ -1,0 +1,505 @@
+/// <summary>
+///     Service class for autoallocation. Khvicha Kuprashvili - 22/03/2024
+/// </summary>
+public class SKEP17AutoAllocationBatchService extends SysOperationServiceBase
+{
+    /// <summary>
+    ///     Process method to run when using this service class for the batch job.
+    /// </summary>
+    /// <param name = "_contract"><c>SKEP17AutoAllocationBatchDataContract</c> class object</param>
+    public void process(SKEP17AutoAllocationBatchDataContract _contract)
+    {
+        Query                   query;
+
+        query = this.handleInvoiceQuery(_contract.getQuery(),
+            _contract.parmFromDate(),
+            _contract.parmToDate());
+
+        try
+        {
+            if (!this.groupInvoices(query))
+            {
+                warning("@SKEP17:InvoicesNotRetrieved");
+                return;
+            }
+        
+            this.initPaymentStaging();
+        }
+        catch
+        {
+            error("@SKEP17:AutoAllocationError");
+        }
+        finally
+        {
+            this.clearInvoices();
+        }
+    }
+
+    /// <summary>
+    ///     Groups invoices based on transaction months, customer and currency
+    /// </summary>
+    /// <param name = "_query">Query of invoices</param>
+    /// <returns>true or false</returns>
+    private boolean groupInvoices(Query _query)
+    {
+        boolean     ret;
+        QueryRun    queryRun;
+        CustTrans   custTrans;
+
+        queryRun = new QueryRun(_query);
+        ret = false;
+
+        while (queryRun.next())
+        {
+            ret = true;
+
+            custTrans = queryRun.get(tableNum(CustTrans));
+            
+            this.addInvoiceToStaging(custTrans);
+        }
+
+        if (ret)
+        {
+            this.initTotals();
+        }
+        
+        return ret;
+    }
+
+    /// <summary>
+    ///     Add invoices to staging table
+    /// </summary>
+    /// <param name = "_custTrans"><c>CustTrans</c> table buffer of a customer invoice</param>
+    private void addInvoiceToStaging(CustTrans _custTrans)
+    {
+        SKEP17AutoAllocationInvoiceStaging staging;
+
+        ttsbegin;
+
+        staging.clear();
+
+        staging.CustTrans = _custTrans.RecId;
+        staging.AccountNum = _custTrans.AccountNum;
+        staging.CurrencyCode = _custTrans.CurrencyCode;
+        staging.AmountCur = _custTrans.AmountCur;
+        staging.TransDate = _custTrans.TransDate;
+        staging.MonthsOfYear = mthOfYr(_custTrans.TransDate);
+        staging.Year = year(_custTrans.TransDate);
+
+        staging.insert();
+
+        ttscommit;
+    }
+
+    /// <summary>
+    ///     Initializes monthly totals based on invoice grouping in staging table
+    /// </summary>
+    private void initTotals()
+    {
+        SKEP17AutoAllocationMonthlyTotals   totalsTable;
+        SKEP17AutoAllocationInvoiceStaging  invoiceStaging;
+
+        insert_recordset totalsTable
+            (AccountNum, AmountCur, CurrencyCode, MonthsOfYear, Year)
+        select
+            AccountNum, sum(AmountCur), CurrencyCode, MonthsOfYear, Year
+        from invoiceStaging
+        group by AccountNum, CurrencyCode, MonthsOfYear, Year;
+
+        totalsTable.clear();
+        invoiceStaging.clear();
+
+        update_recordset invoiceStaging
+        setting
+            MonthlyTotals = totalsTable.RecId
+        join totalsTable
+            where totalsTable.AccountNum == invoiceStaging.AccountNum
+            && totalsTable.CurrencyCode == invoiceStaging.CurrencyCode
+            && totalsTable.MonthsOfYear == invoiceStaging.MonthsOfYear
+            && totalsTable.Year == invoiceStaging.Year;
+    }
+
+    /// <summary>
+    ///     Applyes ranges to initial invoice query
+    /// </summary>
+    /// <param name = "_query">Initial invoice query from the dialog</param>
+    /// <param name = "_fromDate">Date</param>
+    /// <param name = "_toDate">Date</param>
+    /// <returns>Query object</returns>
+    private Query handleInvoiceQuery(Query _query, FromDate _fromDate, ToDate _toDate)
+    {
+        QueryBuildDataSource    queryBDS;
+        FieldId                 fieldId = fieldNum(CustTrans, TransType);
+
+        queryBDS = _query.dataSourceTable(tableNum(CustInvoiceJour));
+
+        queryBDS
+            .addRange(fieldNum(CustInvoiceJour, InvoiceDate))
+            .value(
+                SysQuery::range(
+                _fromDate,
+                _toDate));
+
+        queryBDS = _query.dataSourceTable(tableNum(CustTrans));
+
+        queryBDS
+            .addRange(fieldId)
+            .value(SysQuery::value(LedgerTransType::GeneralJournal));
+
+        queryBDS
+            .addRange(fieldId)
+            .value(SysQuery::value(LedgerTransType::Sales));
+
+        queryBDS
+            .addRange(fieldId)
+            .value(SysQuery::value(LedgerTransType::Project));
+
+        queryBDS
+            .addRange(fieldId)
+            .value(SysQuery::value(LedgerTransType::Cust));
+
+        queryBDS
+            .addRange(fieldId)
+            .value(SysQuery::value(LedgerTransType::Interest));
+
+        queryBDS
+            .addRange(fieldId)
+            .value(SysQuery::value(LedgerTransType::CollectionLetter));
+
+        queryBDS
+            .addRange(fieldId)
+            .value(SysQuery::value(LedgerTransType::Transfer));
+
+        queryBDS
+            .addRange(fieldNum(CustTrans, SettleAmountCur))
+            .value(SysQuery::value(0));
+
+        queryBDS.
+            addRange(fieldNum(CustTrans, AmountCur))
+            .value('0..');
+
+        queryBDS.addSortField(fieldNum(CustTrans, TransDate), SortOrder::Ascending);
+
+        return _query;
+    }
+
+    /// <summary>
+    ///     Initializes staging data for customer payments
+    /// </summary>
+    private void initPaymentStaging()
+    {
+        CustTrans                               custTrans;
+        SKEP17AutoAllocationPaymentStaging      staging;
+        SKEP17AutoAllocationProcessingStatus    paymentAllocationStatus;
+
+        while select forupdate staging
+            where staging.ProcessingStatus == SKEP17AutoAllocationProcessingStatus::Unprocessed
+        {
+            custTrans = CustTrans::find(staging.CustTrans);
+
+            ttsbegin;
+
+            staging.ProcessingStatus = SKEP17AutoAllocationProcessingStatus::Processing;
+            staging.update();
+
+            ttscommit;
+
+            paymentAllocationStatus = this.allocateTransactions(custTrans);
+
+            ttsbegin;
+
+            staging.ProcessingStatus = paymentAllocationStatus;
+            staging.update();
+
+            ttscommit;
+        }
+    }
+
+    /// <summary>
+    ///     Gets monthly totals for given filters
+    /// </summary>
+    /// <param name = "_accountNum">Customer account number</param>
+    /// <param name = "_amountCur">Invoice amount</param>
+    /// <param name = "_currencyCode">Invoice currency</param>
+    /// <returns>Query object</returns>
+    private Query getMonthlyTotals(AccountNum _accountNum, AmountCur _amountCur, CurrencyCode _currencyCode)
+    {
+        Query                                   query;
+        QueryBuildDataSource                    queryBDS;
+        
+        query = new Query();
+        queryBDS = query.addDataSource(tableNum(SKEP17AutoAllocationMonthlyTotals));
+        
+        queryBDS
+            .addRange(fieldNum(SKEP17AutoAllocationMonthlyTotals,AccountNum))
+            .value(SysQuery::value(_accountNum));
+
+        queryBDS
+            .addRange(fieldNum(SKEP17AutoAllocationMonthlyTotals,CurrencyCode))
+            .value(SysQuery::value(_currencyCode));
+
+        queryBDS
+            .addRange(fieldNum(SKEP17AutoAllocationMonthlyTotals,AmountCur))
+            .value(SysQuery::range(0,_amountCur));
+
+        queryBDS
+            .addOrderByField(fieldNum(SKEP17AutoAllocationMonthlyTotals,AmountCur),
+                SortOrder::Descending);
+
+        return query;
+    }
+
+    /// <summary>
+    ///     Allocates customer payment transaction if the necessary conditions are met
+    /// </summary>
+    /// <param name = "_custTrans">Customer payment transaction</param>
+    /// <returns>Allocation status for a payment</returns>
+    private SKEP17AutoAllocationProcessingStatus allocateTransactions(custTrans _custTrans)
+    {
+        SKEP17AutoAllocationProcessingStatus    ret;
+        SKEP17AutoAllocationMonthlyTotals       totalsTable;
+        int64                                   records[];
+        real                                    balances[];
+        real                                    totalSum;
+        real                                    paymAmount = -_custTrans.AmountCur;
+        Query                                   query;
+        QueryRun                                queryRun;
+
+        ret = SKEP17AutoAllocationProcessingStatus::Error;
+        query = this.getMonthlyTotals(_custTrans.AccountNum, paymAmount, _custTrans.CurrencyCode);
+        queryRun = new QueryRun(query);
+
+        int i = 1;
+        totalSum = 0;
+        while (queryRun.next())
+        {
+            totalsTable = queryRun.get(tableNum(SKEP17AutoAllocationMonthlyTotals));
+            records[i] = totalsTable.RecId;
+            balances[i] = totalsTable.AmountCur;
+            totalSum += totalsTable.AmountCur;
+            i++;
+        }
+
+        List invoiceList = new List(Types::Int64);
+        int matched = 0;
+
+        if (balances[1] == paymAmount)
+        {
+            if (i > 1 && balances[2] == balances[1])
+            {
+                matched = 2;
+            }
+            else
+            {
+                matched = 1;
+                invoiceList.addEnd(records[1]);
+            }
+        }
+        else if (totalSum < paymAmount)
+        {
+            matched = 0;
+        }
+        else
+        {
+            real curSum = 0;
+            real curPotential = totalSum;
+            boolean combFound = false;
+            int idx[i-1];
+            int j = 1;
+
+            while (j >= 1)
+            {
+                idx[j] = 1;
+                curSum += balances[j];
+                curPotential -= balances[j];
+
+                if (curSum == paymAmount)
+                {
+                    matched++;
+                    if (matched > 1)
+                    {
+                        break;
+                    }
+                    else
+                    {
+                        combFound = true;
+                        for (int k = 1; k < i; k++)
+                        {
+                            if (idx[k] == 1)
+                            {
+                                invoiceList.addEnd(records[k]);
+                            }
+                        }
+                    }
+                }
+                else if (curSum > paymAmount)
+                {
+                    curSum -= balances[j];
+                    idx[j] = 0;
+                }
+                
+                if (combFound || (curSum + curPotential < paymAmount))
+                {
+                    combFound = false;
+                    if (idx[j] == 1)
+                    {
+                        idx[j] = 0;
+                        curSum -= balances[j];
+                    }
+                    while ( j >= 0 && idx[j] != 1)
+                    {
+                        curPotential += balances[j];
+                        j--;
+                    }
+                    if (j < 1)
+                    {
+                        break;
+                    }
+                    curSum -= balances[j];
+                    idx[j] = 0;
+                }
+                
+                j++;
+            }
+        }
+
+        switch (matched)
+        {
+            case 0:
+                ret = SKEP17AutoAllocationProcessingStatus::NoMatching;
+                break;
+
+            case 1:
+                if (this.tryToSettle(_custTrans, invoiceList.pack()))
+                {
+                    ret = SKEP17AutoAllocationProcessingStatus::Allocated;
+                }
+                else
+                {
+                    ret = SKEP17AutoAllocationProcessingStatus::Error;
+                }
+                break;
+
+            case 2:
+                ret = SKEP17AutoAllocationProcessingStatus::MultipleMatches;
+                break;
+
+            default:
+                ret = SKEP17AutoAllocationProcessingStatus::Error;
+        }
+
+        return ret;
+    }
+
+    /// <summary>
+    ///     Settles payment and invoices if necessary conditions are met
+    /// </summary>
+    /// <param name = "_payment">Customer payment</param>
+    /// <param name = "_con">Customer invoices</param>
+    /// <returns>True or False</returns>
+    private boolean tryToSettle(CustTrans _payment, container _con)
+    {
+        boolean                             ret;
+        CustTable                           custTable;
+        SpecTransExecutionContext           specTransExecutionContext;
+        SpecTransManager                    specTransManager;
+        CustTransOpen                       openPaymentTrans;
+        CustTransOpen                       openInvoiceTrans;
+        SKEP17AutoAllocationMonthlyTotals   monthlyTotals;
+        SKEP17AutoAllocationInvoiceStaging  invoiceStaging;
+        List                                invoiceList;
+        ListEnumerator                      listEnum;
+
+        custTable = CustTable::find(_payment.AccountNum);
+        specTransExecutionContext = SpecTransExecutionContext::newFromSource(custTable);
+        specTransManager = SpecTransManager::newFromSpec(specTransExecutionContext.parmSpecContext());
+
+        select firstonly openPaymentTrans
+            where openPaymentTrans.RefRecId == _payment.RecId;
+
+        specTransManager.insert(openPaymentTrans.DataAreaId,
+            openPaymentTrans.TableId,
+            openPaymentTrans.RecId,
+            _payment.AmountCur,
+            _payment.CurrencyCode);
+
+        invoiceList = List::create(_con);
+        listEnum = invoiceList.getEnumerator();
+
+        while (listEnum.moveNext())
+        {
+            monthlyTotals = SKEP17AutoAllocationMonthlyTotals::find(listEnum.current());
+
+            while select openInvoiceTrans
+                join invoiceStaging
+                where invoiceStaging.CustTrans == openInvoiceTrans.RefRecId
+                && invoiceStaging.MonthlyTotals == monthlyTotals.RecId
+            {
+                specTransManager.insert(openInvoiceTrans.DataAreaId,
+                    openInvoiceTrans.TableId,
+                    openInvoiceTrans.RecId,
+                    invoiceStaging.AmountCur,
+                    invoiceStaging.CurrencyCode);
+            }
+        }
+
+        if(CustTrans::settleTransaction(specTransExecutionContext, CustTransSettleTransactionParameters::construct()))
+        {
+            ret = true;
+            this.removeInvoices(_con);
+        }
+        else
+        {
+            ret = false;
+        }
+
+        return ret;
+    }
+
+    /// <summary>
+    ///     Removes allocated invocies from stagign and monthly totals
+    /// </summary>
+    /// <param name = "_con">Customer Invoices</param>
+    private void removeInvoices(container _con)
+    {
+        List                                invoiceList;
+        ListEnumerator                      listEnum;
+        SKEP17AutoAllocationMonthlyTotals   monthlyTotals;
+        SKEP17AutoAllocationInvoiceStaging  invoiceStaging;
+
+        invoiceList = List::create(_con);
+        listEnum = invoiceList.getEnumerator();
+
+        while (listEnum.moveNext())
+        {
+            
+            monthlyTotals = SKEP17AutoAllocationMonthlyTotals::find(listEnum.current(),true);
+
+            ttsbegin;
+
+            delete_from invoiceStaging
+                where invoiceStaging.MonthlyTotals == monthlyTotals.RecId;
+
+            monthlyTotals.delete();
+
+            ttscommit;
+        }
+    }
+
+    /// <summary>
+    ///     Deletes all staged invoices and monthly totals
+    /// </summary>
+    private void clearInvoices()
+    {
+        SKEP17AutoAllocationMonthlyTotals   monthlyTotals;
+        SKEP17AutoAllocationInvoiceStaging  invoiceStaging;
+
+        ttsbegin;
+
+        delete_from invoiceStaging;
+        delete_from monthlyTotals;
+
+        ttscommit;
+    }
+
+}
