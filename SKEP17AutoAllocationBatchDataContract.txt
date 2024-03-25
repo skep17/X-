@@ -1,0 +1,68 @@
+/// <summary>
+///     Data contract class for Autoallocation. Khvicha Kuprashvili - 22/03/2024
+/// </summary>
+[DataContractAttribute]
+public class SKEP17AutoAllocationBatchDataContract implements SysOperationValidatable
+{
+    FromDate    fromDate;
+    ToDate      toDate;
+    str         packedQuery;
+    boolean     cancelAllocation = false;
+
+    [DataMemberAttribute]
+    public FromDate parmFromDate(FromDate _fromDate = fromDate)
+    {
+        fromDate = _fromDate;
+
+        return fromDate;
+    }
+
+    [DataMemberAttribute]
+    public ToDate parmToDate(ToDate _toDate = toDate)
+    {
+        toDate = _toDate;
+
+        return toDate;
+    }
+
+    [DataMemberAttribute,
+        AifQueryTypeAttribute('_packedQuery', querystr(SKEP17AutoAllocationInvoiceQuery))
+    ]
+    public str parmQuery(str _packedQuery = packedQuery)
+    {
+        packedQuery = _packedQuery;
+
+        return packedQuery;
+    }
+
+    public boolean parmCancelAllocation(boolean _cancelAllocation = cancelAllocation)
+    {
+        cancelAllocation = _cancelAllocation;
+
+        return cancelAllocation;
+    }
+
+    public Query getQuery()
+    {
+        return new Query(SysOperationHelper::base64Decode(packedQuery));
+    }
+
+    public void setQuery(Query _query)
+    {
+        packedQuery = SysOperationHelper::base64Encode(_query.pack());
+    }
+
+    public boolean validate()
+    {
+        boolean ret = true;
+
+        if (fromDate && toDate 
+            && fromDate > toDate)
+        {
+            ret = checkFailed("@RET4317");
+        }
+
+        return ret;
+    }
+
+}
