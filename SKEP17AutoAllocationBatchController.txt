@@ -1,0 +1,50 @@
+/// <summary>
+///     Controller class for autoallocation batch job. Khvicha Kuprashvili - 22/03/2024
+/// </summary>
+public class SKEP17AutoAllocationBatchController extends SysOperationServiceController
+{
+    protected void new()
+    {
+        super(classStr(SKEP17AutoAllocationBatchService),
+            methodStr(SKEP17AutoAllocationBatchService,process),
+            SysOperationExecutionMode::Synchronous);
+    }
+
+    public static SKEP17AutoAllocationBatchController construct(SysOperationExecutionMode _executionMode = SysOperationExecutionMode::Synchronous)
+    {
+        SKEP17AutoAllocationBatchController controller;
+        controller = new SKEP17AutoAllocationBatchController();
+        controller.parmExecutionMode(_executionMode);
+        controller.parmDialogCaption("@SKEP17:InvoiceSelectionCriteria");
+        return controller;
+    }
+
+    private void selectCustomerTransactions(SKEP17AutoAllocationBatchController _controller)
+    {
+        Args            formArgs;
+        FormRun         formRun;
+
+        formArgs = new Args(formStr(SKEP17AutoAllocation));
+        formArgs.parmObject(_controller);
+
+        formRun = new FormRun(formArgs);
+        formRun.init();
+        formRun.run();
+        formRun.wait();
+    }
+
+    public static void main(Args _args)
+    {
+        SKEP17AutoAllocationBatchController controller;
+        SKEP17AutoAllocationBatchDataContract contract;
+        controller = SKEP17AutoAllocationBatchController::construct();
+        controller.parmArgs(_args);
+        controller.selectCustomerTransactions(controller);
+        contract = controller.getDataContractObject();
+        if (!contract.parmCancelAllocation())
+        {
+            controller.startOperation();
+        }
+    }
+
+}
