@@ -1,0 +1,76 @@
+[Form]
+public class SKEP17AutoAllocation extends FormRun
+{
+    SKEP17AutoAllocationBatchController     controller;
+    SKEP17AutoAllocationBatchDataContract   dataContract;
+
+    /// <summary>
+    ///     Initializes data contract.
+    /// </summary>
+    public void init()
+    {
+        super();
+
+        controller = element.args().parmObject();
+        if (controller)
+        {
+            dataContract = controller.getDataContractObject();
+        }
+    }
+
+    [Control("CommandButton")]
+    class OkButton
+    {
+        /// <summary>
+        ///     Allocate button.
+        /// </summary>
+        public void clicked()
+        {
+            RecordInsertList                    insertList;
+            SKEP17AutoAllocationCustPayments    localCustTrans;
+            MultiSelectionHelper                helper;
+            SKEP17AutoAllocationPaymentStaging  staging;
+            
+            super();
+
+            helper = MultiSelectionHelper::construct();
+            helper.parmDatasource(SKEP17AutoAllocationCustPayments_ds);
+            insertList = new RecordInsertList(tableNum(SKEP17AutoAllocationPaymentStaging));
+            localCustTrans = helper.getFirst();
+            while (localCustTrans)
+            {
+                staging.clear();
+
+                staging.ProcessingStatus = SKEP17AutoAllocationProcessingStatus::Unprocessed;
+                staging.AccountNum = localCustTrans.AccountNum;
+                staging.CustTrans = localCustTrans.RecId;
+                staging.TransDate = localCustTrans.TransDate;
+                staging.CurrencyCode = localCustTrans.CurrencyCode;
+                staging.AmountCur = localCustTrans.AmountCur;
+
+                insertList.add(staging);
+
+                localCustTrans = helper.getNext();
+            }
+
+            insertList.insertDatabase();
+        }
+
+    }
+
+    [Control("CommandButton")]
+    class CancelButton
+    {
+        /// <summary>
+        ///     Cancel button.
+        /// </summary>
+        public void clicked()
+        {
+            super();
+
+            dataContract.parmCancelAllocation(true);
+        }
+
+    }
+
+}
